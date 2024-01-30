@@ -162,7 +162,7 @@ class BancoMedicionesWindow():
             self.fsh.instrument_status_checking = True  # Error check after each command
             self.fsh.data_chunk_size = 100 # Definición del tamaño del buffer
             idn = self.fsh.idn_string.split(sep=',')[1]
-            self.conection_text.set(f'Conectado a: {idn}')
+            self.conection_text.set(f'Conectado a: FSH4')
         
         # En caso de no lograrse, se le notifica al usuario en el Label
         except:
@@ -309,7 +309,7 @@ class ATVWindow():
             self.fsh.instrument_status_checking = True  # Error check after each command
             self.fsh.data_chunk_size = 100 # Definición del tamaño del buffer
             idn = self.fsh.idn_string.split(sep=',')[1]
-            self.conection_text.set(f'Conectado a: {idn}')
+            self.conection_text.set(f'Conectado a: FSH4')
         
         # En caso de no lograrse, se le notifica al usuario en el Label
         except:
@@ -356,7 +356,7 @@ class ATVWindow():
                 messagebox.showerror(message=f'El valor {channel} no es un número')
 
             # Mensaje de aviso para apuntar la antena hacia el acimuth deseado
-            messagebox.showinfo(message='Apunte la antena hacia el acimuth deseado y luego de clic en aceptar')
+            messagebox.showinfo(message=f'Apunte la antena hacia el acimuth del canal {channel} y luego de clic en aceptar')
 
             # Puesta en marcha de la medida de la banda
             self.fsh.measurement(channel)
@@ -442,7 +442,7 @@ class DTVWindow():
         self.label_port.grid(row=1, column=0, padx=2, pady=2, sticky='w')
 
         # Nombre de las bandas que disponibles para la medida
-        name_transducers = ['TELEVES','HL223','CABLE']
+        name_transducers = ['TELEVES','HL223','HL223 V1','CABLE']
 
         # Creación del diccionario necesario para crear los check buttons
         self.transducers = dict()
@@ -453,7 +453,7 @@ class DTVWindow():
         i = 0
         for key, var in self.transducers.items():
             check_button = ttk.Checkbutton(self.parameters_frame, text=key, variable=var)
-            check_button.grid(row=1, column=i%3 + 1, padx=10, pady=2, sticky='w')
+            check_button.grid(row=i//3 + 1, column=i%3 + 1, padx=10, pady=2, sticky='w')
             i += 1
 
         ## Tercer Frame
@@ -553,6 +553,7 @@ class DTVWindow():
             if var.get() == True:
                 transducers.append(text)
 
+        # Se inicia la medición de cada canal
         for channel, number_of_plp in self.channels_and_plps:
             
             channel = channel.get()
@@ -564,31 +565,17 @@ class DTVWindow():
             except ValueError:
                 messagebox.showerror(message='Uno de los valores ingresados no es un número')
 
-            # Mensaje de aviso para apuntar la antena hacia el acimuth deseado
-            messagebox.showinfo(message='Apunte la antena hacia el acimuth deseado y luego de clic en aceptar')
-
             # Mensaje de que banda se está leyendo en el Label
             self.measure_text.set(f'Midiendo el canal {channel}')
-
+            
+            # Mensaje de aviso para apuntar la antena hacia el acimuth deseado
+            messagebox.showinfo(message=f'Apunte la antena hacia el acimuth para el canal {channel} y luego de clic en aceptar')
 
             # Puesta en marcha de la medida del canal
             dtv_results = self.etl.measurement(input, transducers, channel, number_of_plp)
 
             # Llenado del excel
             self.etl.fill_excel_channel_sheets(channel, dtv_results)
-
-            channel_folder_name = self.etl.channel_folder_name
-
-            self.etl = DTV(self.ip_adress, True, False)
-
-            for key in dtv_results:
-                txcName = fr'C:\R_S\instr\user\TxCheck1_{key}.ETLtxc'
-                pc_txcheck_name = f'{channel_folder_name}\\PLP_{key}\\TxCheck1.ETLtxc'
-
-                self.etl.read_file_from_instrument_to_pc(txcName, pc_txcheck_name) # Transferencia del archivo al PC
-                self.etl.write_str_with_opc(f"MMEMory:DELete '{txcName}'")  # Se elimina el archivo de la memoria del ETL
-
-
 
         # Mensaje de medición finalizada en el Label
         self.measure_text.set('Medición finalizada')
