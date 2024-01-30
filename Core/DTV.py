@@ -2,6 +2,7 @@ from RsInstrument import *
 import os
 import datetime
 import time
+import statistics
 import subprocess
 import pyautogui
 import pytesseract
@@ -24,7 +25,7 @@ class DTV(RsInstrument):
     # Nombre que se le dará a la carpeta de soportes
     folder_name = f'.\\Soportes_tv_digital'
 
-    # Contador para nombrar las carpetas, en caso de que ya esté creada
+    # Contador de ejecución del código.
     count = 0
 
     # Cargue de libro de excel Formato Registro Monitoreo In Situ TDT
@@ -120,25 +121,36 @@ class DTV(RsInstrument):
         self.write_str_with_opc(f'INIT:CONT OFF') # Desactiva la medición contínua
         self.write_str_with_opc(f'SWE:COUN 10') # Configuración del conteo de barridos a 10.
         self.write_str_with_opc(f'INIT;*WAI') # Inicia la medición y aguarda hasta que se complete el número de barridos seleccionado.
+
+        overload = self.query_int_with_opc('STAT:QUES:POW:COND?')
+
+        if overload:
+            self.write_str_with_opc('INP:PRES:STAT OFF') # Apaga el preselector.
+            overload = self.query_int_with_opc('STAT:QUES:POW:COND?')
+            attenuation = 0
+            while overload and attenuation <= 15:
+                attenuation += 5
+                self.write_str_with_opc(f'INP:ATT {attenuation} dB') # Configuración de la atenuación
+                overload = self.query_int_with_opc('STAT:QUES:POW:COND?')    
         
         # Obtención de la potencia de canal
-        channel_power = self.query_bin_or_ascii_float_list('CALC:MARK:FUNC:POW:RES? ACP')[0] # Lectura del nivel de potencia.
-        
-        if channel_power > 83.75: # Si la potencia es mayor a 99 (Posible señal de saturación u overload)
-            waveform = self.query_bin_or_ascii_float_list('TRAC? TRACE1') # Query of the trace in screen
-            maximum = max(waveform)
-            minimum = min(waveform)
-            self.write_str_with_opc('INP:PRES:STAT OFF') # Apaga el preselector.
-            self.write_str_with_opc(f'DISP:TRAC:Y:RLEV {maximum + 10}') # Apaga el preselector.
-            self.write_str_with_opc(f'DISP:TRAC:Y:RLEV {maximum - minimum + 10}') # Fija el reference level en 83.75 (valor máximo)
-        channel_power = round(float(channel_power),2) # Conversión de tipo string a tipo float y redondeo a dos cifras decimales
+        channel_power = self.query_float_with_opc('CALC:MARK:FUNC:POW:RES? ACP') # Lectura del nivel de potencia.
+        channel_power = round(channel_power,2) # Redondeo a dos cifras decimales
         self.screenshot(channel, self.channel_folder_name, '') # Toma de la captura de pantalla
         self.write_str_with_opc('FREQ:SPAN 5.830 MHz') # Configuración del Span
+        ## Esta línea está añadida para arreglar el problema del .DAT
+        self.write_str_with_opc(f'INIT;*WAI') # Inicia la medición y aguarda hasta que se complete el número de barridos seleccionado.
+        sigma = round((statistics.pstdev(self.query_bin_or_ascii_float_list('TRAC? TRACE1'))),2)
+        if sigma >= 0 and sigma <= 1:
+            channel_type = f'Gauss (σ = {sigma} dB)'
+        elif sigma > 1 and sigma <= 3:
+            channel_type = f'Rice (σ = {sigma} dB)'
+        elif sigma > 3:
+            channel_type = f'Rayleigh (σ = {sigma} dB)'
         self.get_data_file(channel, self.channel_folder_name)
-
         self.write_str_with_opc(f'INIT:CONT ON') # Activa la medición contínua
 
-        return channel_power
+        return channel_power, channel_type
     
     
     # Función de configuración del modo analizador de tv
@@ -151,10 +163,25 @@ class DTV(RsInstrument):
         self.write_str_with_opc('DDEM:ISSY TOL') # Configura el modo 'Tolerant' para ISSY processing.
         self.write_str_with_opc('UNIT:POW DBUV') # Configura la unidad de medida por defecto a dBuV.
         self.write_str_with_opc('FREQ:SPAN 10 MHz') # Configura el Span.
-        self.write_str_with_opc('DISP:TRAC:Y:RLEV 80') # Configura el expected level.
-        self.write_str_with_opc('DISP:TRAC:Y 80 dB') # Configura el range log.
+        # self.write_str_with_opc('DISP:TRAC:Y:RLEV 80') # Configura el expected level.
+        # self.write_str_with_opc('DISP:TRAC:Y 80 dB') # Configura el range log.
+        self.write_str_with_opc('INP:PRES:STAT ON') # Enciende el preselector.
+        self.write_str_with_opc('INP:GAIN:STAT OFF') # Apaga el preamplificador.
         self.write_str_with_opc('INP:ATT 0 dB') # Configura la atenuación.
         self.write_str_with_opc(f'FREQ:RF {self.tvTable[channel]} MHz') # Configuración de la frecuencia central.
+
+        overload = self.query_int_with_opc('STAT:QUES:POW:COND?')
+
+        if overload:
+            self.write_str_with_opc('INP:PRES:STAT OFF') # Apaga el preselector.
+            overload = self.query_int_with_opc('STAT:QUES:POW:COND?')
+            attenuation = 0
+            while overload and attenuation <= 15:
+                attenuation += 5
+                self.write_str_with_opc(f'INP:ATT {attenuation} dB') # Configuración de la atenuación
+                overload = self.query_int_with_opc('STAT:QUES:POW:COND?')
+
+        self.write_str_with_opc('CONF:DTV:MEAS CONS')  # Selecciona la ventana constelación
 
     
     # Medición en el modo 'Spectrum'
@@ -320,22 +347,23 @@ class DTV(RsInstrument):
         # Selecciona la ventana de constelación (necesario para correcta medición del TS Analyzer).
         self.write_str_with_opc('CONF:DTV:MEAS CONS')
 
-        time.sleep(5)
-        self.write_str_with_opc('INST TSAN') # Configura el instrumento al modo "TS Analyzer"
-
         # Apertura del escritorio remoto
         subprocess.run(f"cmdkey /generic:{self.ip_adress} /user:instrument /pass:894129")
         subprocess.Popen(f"mstsc /v:{self.ip_adress} /f", close_fds=True)
+        
+        self.write_str_with_opc('INST TSAN') # Configura el instrumento al modo "TS Analyzer"
+
+        print('Esperando apertura del TS Analyzer')
 
         # Se espera hasta encontrar la foto del ETL que semuestra en la ventana Site View
         while True:
+            self.write_str_with_opc('INST TSAN') # Configura el instrumento al modo "TS Analyzer"
             if pyautogui.locateOnScreen('.\\Imagenes\\ETL.png', region = (300, 80, 360, 150), grayscale = True, confidence = 0.99) is not None:
                 pyautogui.click(300,80)
+                print('Apertura del TS Analyzer detectada')
                 time.sleep(3)
                 break
         
-        # Se elimina el key para la apertura del escritorio remoto
-        subprocess.run(f"cmdkey /delete:{self.ip_adress}")
 
         # Toma captura de pantalla del diagrama de pastel
         img = pyautogui.screenshot(region=(60,25, 700, 505))
@@ -388,10 +416,13 @@ class DTV(RsInstrument):
         pyautogui.click(100, 35) # View
         pyautogui.click(153, 57) # Topology
         pyautogui.click(255, 61) # Site View
+
+        # Se elimina el key para la apertura del escritorio remoto
+        subprocess.run(f"cmdkey /delete:{self.ip_adress}")
     
 
     # Medición en el modo 'TxCheck'
-    def measurement_txcheck(self, plp):
+    def measurement_txcheck(self, path):
         
         # Función para copiar en portapapeles
         def copy2clip(txt):
@@ -401,69 +432,73 @@ class DTV(RsInstrument):
         # Llevar el dispositivo a modo local para activar el botón mode
         self.write_str_with_opc('INST CATV') # Configura el instrumento al modo "Analizador de Tv"
         time.sleep(1)
-        pyautogui.click(650,460)
+        # pyautogui.click(650,460)
+        pyautogui.click(960,540)
+        pyautogui.click(30,80)
 
+        # pytesseract.pytesseract.tesseract_cmd = f'C:\\Users\\{os.getlogin()}\\AppData\\Local\\Programs\\Tesseract-OCR\\tesseract'
+        # while True: # Se espera hasta encontrar la foto del ETL que semuestra en la ventana Site View
+        #     try:
+        #         if pyautogui.locateCenterOnScreen('./Imagenes/Mode.png', grayscale = True, confidence = 0.99) is not None:
+        #             x, y = pyautogui.locateCenterOnScreen('./Imagenes/Mode.png', grayscale = True, confidence = 0.99)
+        #             pyautogui.click(x,y)
+        #             time.sleep(1)
+        #             print('Imagen encontrada')
+        #             break
+        #     except:
+        #         pass
 
-        pytesseract.pytesseract.tesseract_cmd = f'C:\\Users\\{os.getlogin()}\\AppData\\Local\\Programs\\Tesseract-OCR\\tesseract'
-        while True: # Se espera hasta encontrar la foto del ETL que semuestra en la ventana Site View
-            try:
-                if pyautogui.locateCenterOnScreen('./Imagenes/Mode.png', grayscale = True, confidence = 0.99) is not None:
-                    x, y = pyautogui.locateCenterOnScreen('./Imagenes/Mode.png', grayscale = True, confidence = 0.99)
-                    pyautogui.click(x,y)
-                    time.sleep(1)
-                    print('Imagen encontrada')
-                    break
-            except:
-                pass
+        # img = pyautogui.screenshot(region=(180, 170, 300, 170))
+        # palabra = 'TxCheck'
+        # d = pytesseract.image_to_data(img, lang="spa+eng", output_type=Output.DICT)
+        # n_boxes = len(d['level'])
+        # for i in range(n_boxes):
+        #     x, y, text = (d['left'][i], d['top'][i], d['text'][i])
+        #     if text == palabra:
+        #         pyautogui.click(x+180,y+170)
 
-        img = pyautogui.screenshot(region=(180, 170, 300, 170))
-        palabra = 'TxCheck'
-        d = pytesseract.image_to_data(img, lang="spa+eng", output_type=Output.DICT)
-        n_boxes = len(d['level'])
-        for i in range(n_boxes):
-            x, y, text = (d['left'][i], d['top'][i], d['text'][i])
-            if text == palabra:
-                pyautogui.click(x+180,y+170)
-
-        while True: # Se espera hasta encontrar la foto del ETL que semuestra en la ventana Site View
+        while True: # Se espera hasta encontrar el logo del ETL mostrado en la ventna principal del TxCheck
             try:
                 if pyautogui.locateCenterOnScreen('./Imagenes/Logo.png', grayscale = True, confidence = 0.95) is not None:
                     time.sleep(1)
-                    print('Logo encontrado')
                     break
             except:
                 pass
 
         pyautogui.click(90,85)
-        time.sleep(0.5)
+
+        time.sleep(1)
         pyautogui.click(660,220)
         time.sleep(2)
         pyautogui.click(308,55)
         time.sleep(1)
+        pyautogui.press('enter') # Aceptar
+        time.sleep(1)
 
-        while not pyautogui.pixelMatchesColor(308, 50, (0, 255, 0)):
+
+        while not pyautogui.pixelMatchesColor(308, 55, (0, 255, 0)):
             continue
 
         pyautogui.click(400,120)
         pyautogui.hotkey(['ctrl', 's'])
         time.sleep(1)
 
-        txcName = fr'C:\R_S\instr\user\TxCheck1_{plp}.ETLtxc'
+        txcheck_path_instr = r'C:\R_S\instr\user\TxCheck1.ETLtxc'
+        txcheck_path_pc = f'{path}\\TxCheck1.ETLtxc'
 
-        copy2clip(txcName)
+        copy2clip(txcheck_path_instr)
 
         pyautogui.hotkey(['ctrl', 'v'])
         pyautogui.press('enter')
         time.sleep(5)
 
-        pyautogui.doubleClick(981,596)
-        time.sleep(1)
-        pyautogui.click(1908,5)
-        
-        time.sleep(2)
+        try:
+            self.read_file_from_instrument_to_pc(txcheck_path_instr, txcheck_path_pc) # Transferencia del archivo al PC
+            self.write_str_with_opc(f"MMEMory:DELete '{txcheck_path_instr}'")  # Se elimina el archivo de la memoria del ETL
+        except:
+            self.read_file_from_instrument_to_pc(txcheck_path_instr, txcheck_path_pc) # Transferencia del archivo al PC
+            self.write_str_with_opc(f"MMEMory:DELete '{txcheck_path_instr}'")  # Se elimina el archivo de la memoria del ETL
 
-        # self.read_file_from_instrument_to_pc(txcName, path) # Transferencia del archivo al PC
-        # self.write_str_with_opc(f"MMEMory:DELete '{txcName}'")  # Se elimina el archivo de la memoria del ETL
 
         # Cerrar la ventana de escritorio remoto
         pyautogui.moveTo(990,0) # Puntero arriba al centro de la pantalla
@@ -472,6 +507,7 @@ class DTV(RsInstrument):
         time.sleep(0.250)
         pyautogui.press('enter') # Aceptar
         time.sleep(0.250)
+        
 
 
     # Función que ejecuta la medición según la banda
@@ -490,7 +526,7 @@ class DTV(RsInstrument):
                 self.write_str_with_opc('SENS:DDEM:DECP:MODE AUTO')
                 plp = self.query_with_opc('CALC:DTV:RES:L1Post? DPLP').split(sep=',')[0]
                 t = time.time()
-                while plp == '---' and time.time() - t <= 15:
+                while plp == '---' and time.time() - t <= 30:
                     plp = self.query_with_opc('CALC:DTV:RES:L1Post? DPLP').split(sep=',')[0]
             else:
                 plp = int(self.query_with_opc('CALC:DTV:RES:L1Post? APLP').split(sep=',')[21*i + 2]) # Lectura del número de PLP.
@@ -498,7 +534,7 @@ class DTV(RsInstrument):
                 self.write_str_with_opc(f'DDEM:DECP:MAN {plp}') # Selecciona el PLP.
             
 
-            self.plp_folder_name = f'{self.folder_name}\\CH_{channel}\\PLP_{plp}'
+            self.plp_folder_name = f'{self.channel_folder_name}\\PLP_{plp}'
 
             # Generación de subcarpeta por cada PLP
             os.mkdir(self.plp_folder_name)
@@ -510,7 +546,7 @@ class DTV(RsInstrument):
             dtv_results[plp] = [MRPLp, BERLdpc, cons, PLPCodeRate, FFTMode, GINTerval, PPATtern] # Obtención de todas las variables necesarias.
             if MRPLp != 'No disponible': # Si el BER logró ser medido
                 self.measurement_ts_analyzer(channel, self.plp_folder_name) # Se ejecuta la medición de TS Analyzer, de modo contrario, no.
-                self.measurement_txcheck(plp)
+                self.measurement_txcheck(self.plp_folder_name)
 
         return dtv_results # Diccionario con las variables MER, BER, Modulación, FEC, FFT, Intervalo de guardas y Patrón de pilotos, para cada PLP.
     
@@ -518,13 +554,13 @@ class DTV(RsInstrument):
     # Función de medición completa
     def measurement(self, input, transducers, channel, number_of_plp):
         self.setup_spectrum_analyzer(input, transducers)
-        channel_power = self.measurement_spectrum_analyzer(channel)
+        channel_power, channel_type = self.measurement_spectrum_analyzer(channel)
         self.setup_tv_analyzer(channel)
         dtv_results = self.measurement_dtv(channel, number_of_plp)
 
         for key in dtv_results:
             dtv_results[key].insert(0,channel_power) # Agrega la variable potencia de canal al diccionario anterior.
-
+            dtv_results[key].insert(0,channel_type) # Agrega la variable tipo de canal al diccionario anterior.
         return dtv_results
     
 
@@ -538,7 +574,12 @@ class DTV(RsInstrument):
         ws.title = f'CH{channel}' # Modificación del nombre de la nueva hoja a "CH<Numero del canal>"
         ws['Q8'] = self.tvTable[channel] # Diligencia el valor de frecuencia en MHz en la casilla Q8 de la hoja.
 
-        first_plp = list(dtv_results.keys())[0]
+        now = datetime.datetime.now() # Obetención de fecha y hora de la medida
+
+        ws['AC8'] = f'{now.day}/{now.month}/{now.year}' # Diligencia la casilla "Fecha de medición"
+        ws['AF8'] = f'{now.hour}:{now.minute}' # Diligencia la casilla "Hora de medición"
+
+        first_plp = list(dtv_results.keys())[0] 
         imgs = [ # Carga de capturas de pantalla.
             Image(f'{self.channel_folder_name}\\{self.tvTable[channel]}.png'),
             Image(f'{self.channel_folder_name}\\PLP_{first_plp}\\{self.tvTable[channel]}_002.png'),
@@ -547,6 +588,8 @@ class DTV(RsInstrument):
             Image(f'{self.channel_folder_name}\\PLP_{first_plp}\\{self.tvTable[channel]}_007.png'),
             Image(f'{self.channel_folder_name}\\PLP_{first_plp}\\{self.tvTable[channel]}_010.png')
         ]
+
+        ws['W8'] = dtv_results[first_plp][0] # Diligencia la casilla "tipo de canal" en la casilla W8 de la hoja
 
         for img in imgs: # Modificación del tamaño de las imágenes.
             img.width  = img.width/3.1
@@ -562,14 +605,14 @@ class DTV(RsInstrument):
         index = 0
         for key in dtv_results: # Diligenciamiento de parámetros de calidad del servicio en la hoja.
             ws[f'J{19 + index}']  = key
-            ws[f'L{19 + index}']  = dtv_results[key][0]
-            ws[f'P{19 + index}']  = dtv_results[key][1]
-            ws[f'R{19 + index}']  = dtv_results[key][2]
-            ws[f'V{19 + index}']  = dtv_results[key][3]
-            ws[f'Y{19 + index}']  = dtv_results[key][4]
-            ws[f'AA{19 + index}'] = dtv_results[key][5]
-            ws[f'AD{19 + index}'] = dtv_results[key][6]
-            ws[f'AG{19 + index}'] = dtv_results[key][7]
+            ws[f'L{19 + index}']  = dtv_results[key][1]
+            ws[f'P{19 + index}']  = dtv_results[key][2]
+            ws[f'R{19 + index}']  = dtv_results[key][3]
+            ws[f'V{19 + index}']  = dtv_results[key][4]
+            ws[f'Y{19 + index}']  = dtv_results[key][5]
+            ws[f'AA{19 + index}'] = dtv_results[key][6]
+            ws[f'AD{19 + index}'] = dtv_results[key][7]
+            ws[f'AG{19 + index}'] = dtv_results[key][8]
             index += 1
 
         self.count += 1
